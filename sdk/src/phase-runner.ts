@@ -271,7 +271,19 @@ export class PhaseRunner {
       const stepCost = s.planResults?.reduce((c, pr) => c + pr.totalCostUsd, 0) ?? 0;
       return sum + stepCost;
     }, 0);
-    const success = !halted && steps.every(s => s.success);
+    // Phase success is determined by the final outcome, not intermediate failures.
+    // If verify passed (or was skipped) and advance ran, the phase succeeded —
+    // even if execute needed retries to get there.
+    const verifySteps = steps.filter((s: PhaseStepResult) => s.step === PhaseStepType.Verify);
+    const advanceSteps = steps.filter((s: PhaseStepResult) => s.step === PhaseStepType.Advance);
+    const lastVerify = verifySteps.length > 0 ? verifySteps[verifySteps.length - 1] : undefined;
+    const lastAdvance = advanceSteps.length > 0 ? advanceSteps[advanceSteps.length - 1] : undefined;
+    const success = !halted && (
+      // If verify ran, its result determines success
+      lastVerify ? lastVerify.success && (lastAdvance?.success ?? true)
+      // If verify was skipped, all steps must pass
+      : steps.every((s: PhaseStepResult) => s.success)
+    );
 
     // Emit phase_complete
     this.eventStream.emitEvent({
