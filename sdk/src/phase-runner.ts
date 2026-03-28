@@ -179,6 +179,8 @@ export class PhaseRunner {
     if (!halted) {
       if (!this.config.workflow.research) {
         this.logger?.debug('Skipping research: config.workflow.research=false');
+      } else if (this.config.workflow.auto_advance && phaseOp.has_research) {
+        this.logger?.info(`Skipping research step for phase ${phaseNumber}: research already exists (auto_advance resume)`);
       } else {
         const result = await this.retryOnce('research', () => this.runStep(PhaseStepType.Research, phaseNumber, sessionOpts));
         steps.push(result);
@@ -187,26 +189,35 @@ export class PhaseRunner {
 
     // ── Step 3: Plan ──
     if (!halted) {
-      const result = await this.retryOnce('plan', () => this.runStep(PhaseStepType.Plan, phaseNumber, sessionOpts));
-      steps.push(result);
+      // In auto_advance mode, skip planning/research/plan-check if artifacts already exist.
+      // This avoids re-running expensive steps when resuming a previously attempted phase.
+      const skipExistingPlan = this.config.workflow.auto_advance && phaseOp.has_plans && phaseOp.plan_count > 0;
+      if (skipExistingPlan) {
+        this.logger?.info(`Skipping plan step for phase ${phaseNumber}: ${phaseOp.plan_count} plan(s) already exist (auto_advance resume)`);
+      } else {
+        const result = await this.retryOnce('plan', () => this.runStep(PhaseStepType.Plan, phaseNumber, sessionOpts));
+        steps.push(result);
 
-      // Re-query to check for plans
-      try {
-        phaseOp = await this.tools.initPhaseOp(phaseNumber);
-      } catch {
-        // Proceed with prior state
-      }
+        // Re-query to check for plans
+        try {
+          phaseOp = await this.tools.initPhaseOp(phaseNumber);
+        } catch {
+          // Proceed with prior state
+        }
 
-      if (!phaseOp.has_plans || phaseOp.plan_count === 0) {
-        const decision = await this.invokeBlockerCallback(callbacks, phaseNumber, PhaseStepType.Plan, 'No plans created after plan step');
-        if (decision === 'stop') {
-          halted = true;
+        if (!phaseOp.has_plans || phaseOp.plan_count === 0) {
+          const decision = await this.invokeBlockerCallback(callbacks, phaseNumber, PhaseStepType.Plan, 'No plans created after plan step');
+          if (decision === 'stop') {
+            halted = true;
+          }
         }
       }
     }
 
     // ── Step 3.5: Plan Check ──
-    if (!halted && this.config.workflow.plan_check) {
+    // Skip plan check when resuming with existing plans in auto_advance mode
+    const skipExistingPlanCheck = this.config.workflow.auto_advance && phaseOp.has_plans && phaseOp.plan_count > 0 && steps.every(s => s.step !== PhaseStepType.Plan);
+    if (!halted && this.config.workflow.plan_check && !skipExistingPlanCheck) {
       const planCheckResult = await this.retryOnce('plan-check', () => this.runPlanCheckStep(phaseNumber, sessionOpts));
       steps.push(planCheckResult);
 
