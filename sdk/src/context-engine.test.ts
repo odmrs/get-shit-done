@@ -139,7 +139,7 @@ describe('ContextEngine', () => {
       });
 
       const logger = makeMockLogger();
-      const engine = new ContextEngine(projectDir, logger);
+      const engine = new ContextEngine(projectDir, { logger });
       const files = await engine.resolveContextFiles(PhaseType.Plan);
 
       // research and requirements are optional for plan — no warning
@@ -153,7 +153,7 @@ describe('ContextEngine', () => {
       await createPlanningDir(projectDir, {});
 
       const logger = makeMockLogger();
-      const engine = new ContextEngine(projectDir, logger);
+      const engine = new ContextEngine(projectDir, { logger });
       await engine.resolveContextFiles(PhaseType.Execute);
 
       expect(logger.warn).toHaveBeenCalledWith(
