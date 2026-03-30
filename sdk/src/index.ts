@@ -136,9 +136,9 @@ export class GSD {
   async runPhase(phaseNumber: string, options?: PhaseRunnerOptions): Promise<PhaseRunnerResult> {
     const tools = this.createTools();
     const promptFactory = new PromptFactory();
-    const contextEngine = this.workstream
-      ? new ContextEngine(this.projectDir, this.workstream)
-      : new ContextEngine(this.projectDir);
+    const contextEngine = new ContextEngine(this.projectDir, {
+      workstream: this.workstream,
+    });
     const config = await loadConfig(this.projectDir, this.workstream);
 
     // Auto mode: force auto_advance on and skip_discuss off so self-discuss kicks in

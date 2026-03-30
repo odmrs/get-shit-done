@@ -65,17 +65,11 @@ export class ContextEngine {
   private readonly planningDir: string;
   private readonly logger?: GSDLogger;
 
-  constructor(projectDir: string, loggerOrWorkstream?: GSDLogger | string, logger?: GSDLogger) {
-    // Support two signatures:
-    //   new ContextEngine(projectDir, logger?)
-    //   new ContextEngine(projectDir, workstream?, logger?)
-    if (typeof loggerOrWorkstream === 'string') {
-      this.planningDir = join(projectDir, '.planning', 'workstreams', loggerOrWorkstream);
-      this.logger = logger;
-    } else {
-      this.planningDir = join(projectDir, '.planning');
-      this.logger = loggerOrWorkstream;
-    }
+  constructor(projectDir: string, opts?: { workstream?: string; logger?: GSDLogger }) {
+    this.planningDir = opts?.workstream
+      ? join(projectDir, '.planning', 'workstreams', opts.workstream)
+      : join(projectDir, '.planning');
+    this.logger = opts?.logger;
   }
 
   /**
