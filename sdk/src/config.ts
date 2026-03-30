@@ -55,7 +55,7 @@ export interface GSDConfig {
 // ─── Defaults ────────────────────────────────────────────────────────────────
 
 export const CONFIG_DEFAULTS: GSDConfig = {
-  model_profile: 'balanced',
+  model_profile: 'quality',
   commit_docs: true,
   parallelization: true,
   search_gitignored: false,
