@@ -6,19 +6,29 @@
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
+import fs from 'fs';
+import fsPromises from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import type { GSDEvent, TransportHandler } from './types.js';
 
 export interface WSTransportOptions {
   port: number;
+  projectDir: string;
+  workstream: string;
+  totalPhases?: number;
 }
 
 export class WSTransport implements TransportHandler {
   private readonly port: number;
+  private readonly options: WSTransportOptions;
   private server: WebSocketServer | null = null;
   private closing = false;
+  private pidFile: string | null = null;
 
   constructor(options: WSTransportOptions) {
     this.port = options.port;
+    this.options = options;
   }
 
   /**
@@ -28,7 +38,7 @@ export class WSTransport implements TransportHandler {
   async start(): Promise<void> {
     if (this.closing) return;
 
-    return new Promise<void>((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       try {
         this.server = new WebSocketServer({ port: this.port });
         this.server.on('listening', () => resolve());
@@ -37,6 +47,20 @@ export class WSTransport implements TransportHandler {
         reject(err);
       }
     });
+
+    // Write PID file for auto-discovery
+    const instancesDir = path.join(os.homedir(), '.gsd', 'instances');
+    await fsPromises.mkdir(instancesDir, { recursive: true });
+    const pidFile = path.join(instancesDir, `${process.pid}.json`);
+    await fsPromises.writeFile(pidFile, JSON.stringify({
+      port: this.port,
+      pid: process.pid,
+      projectDir: this.options.projectDir,
+      workstream: this.options.workstream,
+      startedAt: new Date().toISOString(),
+      ...(this.options.totalPhases !== undefined && { totalPhases: this.options.totalPhases }),
+    }));
+    this.pidFile = pidFile;
   }
 
   /**
@@ -69,6 +93,16 @@ export class WSTransport implements TransportHandler {
    */
   close(): void {
     this.closing = true;
+
+    // Remove PID file synchronously (close() must remain void per TransportHandler)
+    if (this.pidFile) {
+      try {
+        fs.unlinkSync(this.pidFile);
+      } catch {
+        // already removed or never written — ignore
+      }
+      this.pidFile = null;
+    }
 
     if (!this.server) return;
 

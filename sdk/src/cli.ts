@@ -241,8 +241,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // Optional WebSocket transport
     let wsTransport: WSTransport | undefined;
     if (args.wsPort !== undefined) {
-      wsTransport = new WSTransport({ port: args.wsPort });
+      wsTransport = new WSTransport({ port: args.wsPort, projectDir: args.projectDir, workstream: args.workstream ?? '' });
       await wsTransport.start();
+      registerSignalHandlers(wsTransport);
       gsd.addTransport(wsTransport);
       console.log(`WebSocket transport listening on port ${args.wsPort}`);
     }
@@ -317,8 +318,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     // Optional WebSocket transport
     let wsTransport: WSTransport | undefined;
     if (args.wsPort !== undefined) {
-      wsTransport = new WSTransport({ port: args.wsPort });
+      wsTransport = new WSTransport({ port: args.wsPort, projectDir: args.projectDir, workstream: args.workstream ?? '' });
       await wsTransport.start();
+      registerSignalHandlers(wsTransport);
       gsd.addTransport(wsTransport);
       console.log(`WebSocket transport listening on port ${args.wsPort}`);
     }
@@ -407,8 +409,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // Optional WebSocket transport
   let wsTransport: WSTransport | undefined;
   if (args.wsPort !== undefined) {
-    wsTransport = new WSTransport({ port: args.wsPort });
+    wsTransport = new WSTransport({ port: args.wsPort, projectDir: args.projectDir, workstream: args.workstream ?? '' });
     await wsTransport.start();
+    registerSignalHandlers(wsTransport);
     gsd.addTransport(wsTransport);
     console.log(`WebSocket transport listening on port ${args.wsPort}`);
   }
@@ -436,6 +439,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       wsTransport.close();
     }
   }
+}
+
+// ─── Signal handler registration ─────────────────────────────────────────────
+
+/**
+ * Register SIGINT/SIGTERM handlers to close the WebSocket transport cleanly.
+ * Called after wsTransport.start() so PID file is written before handlers run.
+ */
+export function registerSignalHandlers(wsTransport: WSTransport): void {
+  const graceful = () => {
+    wsTransport.close();
+    process.exit(0);
+  };
+  process.on('SIGINT', graceful);
+  process.on('SIGTERM', graceful);
 }
 
 // ─── Auto-run when invoked directly ──────────────────────────────────────────
