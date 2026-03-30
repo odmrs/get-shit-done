@@ -34,7 +34,8 @@ function resolveModel(options?: SessionOptions, config?: GSDConfig): string | un
     return profileMap[config.model_profile] ?? config.model_profile;
   }
 
-  return undefined; // Let SDK use its default
+  // Default to Opus for maximum quality
+  return 'claude-opus-4-6';
 }
 
 // ─── Session runner ──────────────────────────────────────────────────────────
@@ -71,8 +72,8 @@ export async function runPlanSession(
   const model = resolveModel(options, config);
 
   // Configure query options
-  const maxTurns = options?.maxTurns ?? 50;
-  const maxBudgetUsd = options?.maxBudgetUsd ?? 5.0;
+  const maxTurns = options?.maxTurns ?? 200;
+  const maxBudgetUsd = options?.maxBudgetUsd ?? 100.0;
   const cwd = options?.cwd ?? process.cwd();
 
   const queryStream = query({
@@ -272,8 +273,8 @@ export async function runPhaseStepSession(
   const phaseType = stepTypeToPhaseType(phaseStep);
   const allowedTools = options?.allowedTools ?? getToolsForPhase(phaseType);
   const model = resolveModel(options, config);
-  const maxTurns = options?.maxTurns ?? 50;
-  const maxBudgetUsd = options?.maxBudgetUsd ?? 5.0;
+  const maxTurns = options?.maxTurns ?? 200;
+  const maxBudgetUsd = options?.maxBudgetUsd ?? 100.0;
   const cwd = options?.cwd ?? process.cwd();
 
   const queryStream = query({

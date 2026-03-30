@@ -226,10 +226,18 @@ function cmdPhasePlanIndex(cwd, phase, raw) {
     return;
   }
 
-  // Get all files in phase directory
+  // Get all files in phase directory (root + plans/ subdirectory)
   const phaseFiles = fs.readdirSync(phaseDir);
-  const planFiles = phaseFiles.filter(f => f.endsWith('-PLAN.md') || f === 'PLAN.md').sort();
-  const summaryFiles = phaseFiles.filter(f => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md');
+  const plansSubdir = path.join(phaseDir, 'plans');
+  const subFiles = fs.existsSync(plansSubdir) ? fs.readdirSync(plansSubdir) : [];
+  const planFiles = [
+    ...phaseFiles.filter(f => f.endsWith('-PLAN.md') || f === 'PLAN.md'),
+    ...subFiles.filter(f => f.endsWith('-PLAN.md') || f === 'PLAN.md'),
+  ].sort();
+  const summaryFiles = [
+    ...phaseFiles.filter(f => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md'),
+    ...subFiles.filter(f => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md'),
+  ];
 
   // Build set of plan IDs with summaries
   const completedPlanIds = new Set(
@@ -243,7 +251,9 @@ function cmdPhasePlanIndex(cwd, phase, raw) {
 
   for (const planFile of planFiles) {
     const planId = planFile.replace('-PLAN.md', '').replace('PLAN.md', '');
-    const planPath = path.join(phaseDir, planFile);
+    const planPathRoot = path.join(phaseDir, planFile);
+    const planPathSub = path.join(phaseDir, 'plans', planFile);
+    const planPath = fs.existsSync(planPathRoot) ? planPathRoot : planPathSub;
     const content = fs.readFileSync(planPath, 'utf-8');
     const fm = extractFrontmatter(content);
 

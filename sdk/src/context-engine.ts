@@ -73,7 +73,13 @@ export class ContextEngine {
   }
 
   /**
-   * Resolve context files appropriate for the given phase type.
+   * Return the resolved planning directory path.
+   */
+  getPlanningDir(): string {
+    return this.planningDir;
+  }
+
+  /**
    * Reads each file defined in the phase manifest, returning undefined
    * for missing optional files and warning for missing required files.
    */

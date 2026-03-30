@@ -6,6 +6,10 @@
  * and structured error handling per step.
  */
 
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { execSync } from 'node:child_process';
+
 import type {
   PhaseOpInfo,
   PhaseStepResult,
@@ -26,6 +30,7 @@ import type { PromptFactory } from './phase-prompt.js';
 import type { ContextEngine } from './context-engine.js';
 import type { GSDLogger } from './logger.js';
 import { runPhaseStepSession, runPlanSession } from './session-runner.js';
+import { parsePlanFile } from './plan-parser.js';
 
 // ─── Error type ──────────────────────────────────────────────────────────────
 
@@ -749,6 +754,8 @@ export class PhaseRunner {
 
   /**
    * Execute a single plan by ID within the execute step.
+   * Resolves the actual plan file from the phase directory and passes
+   * its parsed content to the prompt builder.
    */
   private async executeSinglePlan(
     phaseNumber: string,
@@ -757,10 +764,33 @@ export class PhaseRunner {
   ): Promise<PlanResult> {
     try {
       const phaseType = PhaseType.Execute;
-      const contextFiles = await this.contextEngine.resolveContextFiles(phaseType);
-      const prompt = await this.promptFactory.buildPrompt(phaseType, null, contextFiles);
 
-      return await runPhaseStepSession(
+      // Resolve the actual plan file path from the phase directory
+      const planPath = this.resolvePlanPath(phaseNumber, planId);
+      if (!planPath) {
+        return {
+          success: false,
+          sessionId: '',
+          totalCostUsd: 0,
+          durationMs: 0,
+          usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
+          numTurns: 0,
+          error: {
+            subtype: 'plan_not_found',
+            messages: [`Plan file not found for phase ${phaseNumber}, plan ${planId}`],
+          },
+        };
+      }
+
+      // Parse the plan file into structured data
+      const parsedPlan = await parsePlanFile(planPath);
+      const contextFiles = await this.contextEngine.resolveContextFiles(phaseType);
+      const prompt = await this.promptFactory.buildPrompt(phaseType, parsedPlan, contextFiles);
+
+      // Snapshot git state before execution to detect if plan produced changes
+      const gitStateBefore = this.getGitFileCount();
+
+      const result = await runPhaseStepSession(
         prompt,
         PhaseStepType.Execute,
         this.config,
@@ -768,6 +798,24 @@ export class PhaseRunner {
         this.eventStream,
         { phase: phaseType, planName: planId },
       );
+
+      // Post-execution validation: if plan claims success but produced no filesystem changes, mark as failed
+      if (result.success) {
+        const gitStateAfter = this.getGitFileCount();
+        if (gitStateBefore >= 0 && gitStateAfter >= 0 && gitStateAfter === gitStateBefore) {
+          this.logger?.warn(`Plan ${planId} reported success but produced no filesystem changes — marking as failed`);
+          return {
+            ...result,
+            success: false,
+            error: {
+              subtype: 'no_artifacts_produced',
+              messages: [`Plan ${planId} completed but produced no new or modified files`],
+            },
+          };
+        }
+      }
+
+      return result;
     } catch (err) {
       return {
         success: false,
@@ -782,6 +830,38 @@ export class PhaseRunner {
         },
       };
     }
+  }
+
+  /**
+   * Resolve the filesystem path to a plan file given phase number and plan ID.
+   * Checks both phase root and plans/ subdirectory.
+   */
+  private resolvePlanPath(phaseNumber: string, planId: string): string | null {
+    const planningDir = this.contextEngine.getPlanningDir();
+    const phasesDir = join(planningDir, 'phases');
+    if (!existsSync(phasesDir)) return null;
+
+    const normalized = phaseNumber.replace(/^0+/, '') || '0';
+    const entries = readdirSync(phasesDir);
+    const phaseDir = entries.find(e => {
+      const num = e.split('-')[0].replace(/^0+/, '') || '0';
+      return num === normalized;
+    });
+
+    if (!phaseDir) return null;
+
+    const planFile = `${planId}-PLAN.md`;
+    const rootPath = join(phasesDir, phaseDir, planFile);
+    if (existsSync(rootPath)) return rootPath;
+
+    const subPath = join(phasesDir, phaseDir, 'plans', planFile);
+    if (existsSync(subPath)) return subPath;
+
+    // Also try PLAN.md (single plan per phase)
+    const singlePlan = join(phasesDir, phaseDir, 'PLAN.md');
+    if (existsSync(singlePlan)) return singlePlan;
+
+    return null;
   }
 
   /**
@@ -853,8 +933,8 @@ export class PhaseRunner {
         };
       }
 
-      // Parse verification outcome from session result
-      outcome = this.parseVerificationOutcome(lastResult);
+      // Parse verification outcome from VERIFICATION.md (not just session result)
+      outcome = this.parseVerificationOutcome(lastResult, phaseNumber);
 
       if (outcome === 'passed') {
         break;
@@ -1088,14 +1168,74 @@ export class PhaseRunner {
   }
 
   /**
-   * Parse the verification outcome from a PlanResult.
-   * In a real implementation, this would parse the session output for
-   * structured verification signals. For now, map from success/error.
+   * Parse the verification outcome by reading VERIFICATION.md frontmatter.
+   * The verify agent writes `status: passed | gaps_found` to the file.
+   * Falls back to PlanResult.success only if the file cannot be read.
    */
-  private parseVerificationOutcome(result: PlanResult): VerificationOutcome {
-    if (result.success) return 'passed';
+  private parseVerificationOutcome(result: PlanResult, phaseNumber?: string): VerificationOutcome {
     if (result.error?.subtype === 'human_review_needed') return 'human_needed';
+
+    // Try to read VERIFICATION.md from the phase directory
+    if (phaseNumber) {
+      const verificationPath = this.resolveVerificationPath(phaseNumber);
+      if (verificationPath) {
+        try {
+          const content = readFileSync(verificationPath, 'utf-8');
+          const statusMatch = content.match(/^status:\s*(passed|gaps_found|human_needed)/m);
+          if (statusMatch) {
+            return statusMatch[1] as VerificationOutcome;
+          }
+          // Also check score — 0/N means gaps_found
+          const scoreMatch = content.match(/^score:\s*(\d+)\/(\d+)/m);
+          if (scoreMatch && parseInt(scoreMatch[1], 10) === 0) {
+            return 'gaps_found';
+          }
+        } catch {
+          this.logger?.warn(`Could not read VERIFICATION.md for phase ${phaseNumber}`);
+        }
+      }
+    }
+
+    // Fallback: trust PlanResult.success
+    if (result.success) return 'passed';
     return 'gaps_found';
+  }
+
+  /**
+   * Resolve the path to VERIFICATION.md for a given phase.
+   */
+  private resolveVerificationPath(phaseNumber: string): string | null {
+    const planningDir = this.contextEngine.getPlanningDir();
+    const phasesDir = join(planningDir, 'phases');
+    if (!existsSync(phasesDir)) return null;
+
+    const normalized = phaseNumber.replace(/^0+/, '') || '0';
+    const entries = readdirSync(phasesDir);
+    const match = entries.find(e => {
+      const num = e.split('-')[0].replace(/^0+/, '') || '0';
+      return num === normalized;
+    });
+
+    if (!match) return null;
+    const verPath = join(phasesDir, match, 'VERIFICATION.md');
+    return existsSync(verPath) ? verPath : null;
+  }
+
+  /**
+   * Get the count of tracked + untracked files as a quick filesystem snapshot.
+   * Used to detect whether a plan execution produced any file changes.
+   */
+  private getGitFileCount(): number {
+    try {
+      const output = execSync('git status --porcelain 2>/dev/null | wc -l', {
+        cwd: this.projectDir,
+        encoding: 'utf-8',
+        timeout: 5000,
+      });
+      return parseInt(output.trim(), 10) || 0;
+    } catch {
+      return -1; // Can't determine, skip validation
+    }
   }
 
   /**

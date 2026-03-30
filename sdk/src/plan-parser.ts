@@ -302,6 +302,49 @@ export function parseTasks(content: string): PlanTask[] {
   return tasks;
 }
 
+// ─── Markdown task fallback ──────────────────────────────────────────────────
+
+/**
+ * Parse markdown-style tasks (### Task N: Name) as fallback when no XML tasks found.
+ * Splits content at each ### Task header and treats everything until the next header as the action.
+ */
+function parseMarkdownTasks(content: string): PlanTask[] {
+  const tasks: PlanTask[] = [];
+  const taskRegex = /###\s*Task\s*(\d+)[:\s]*(.*)/gi;
+  const matches = [...content.matchAll(taskRegex)];
+
+  for (let i = 0; i < matches.length; i++) {
+    const match = matches[i];
+    const name = match[2]?.trim() || `Task ${match[1]}`;
+    const startIdx = match.index! + match[0].length;
+    const endIdx = i + 1 < matches.length ? matches[i + 1].index! : content.length;
+    const body = content.slice(startIdx, endIdx).trim();
+
+    // Extract **File:** or **Files:** lines
+    const fileMatch = body.match(/\*\*Files?\*\*[:\s]*`?([^`\n]+)`?/i);
+    const files = fileMatch
+      ? fileMatch[1].split(',').map(f => f.trim()).filter(Boolean)
+      : [];
+
+    // Extract **Done condition:** as acceptance criteria
+    const doneMatch = body.match(/\*\*Done\s*condition\*\*[:\s]*([\s\S]*?)(?=\n###|\n\*\*|$)/i);
+    const done = doneMatch ? doneMatch[1].trim() : '';
+
+    tasks.push({
+      type: 'auto',
+      name,
+      files,
+      read_first: [],
+      action: body,
+      verify: '',
+      acceptance_criteria: done ? [done] : [],
+      done,
+    });
+  }
+
+  return tasks;
+}
+
 // ─── Section extraction ──────────────────────────────────────────────────────
 
 /**
@@ -394,12 +437,25 @@ export function parsePlan(content: string): ParsedPlan {
     }
   }
 
+  // Try XML objective first, fall back to markdown **Goal:** line
+  let objective = extractSection(content, 'objective');
+  if (!objective) {
+    const goalMatch = content.match(/\*\*Goal:?\*\*[:\s]*(.+)/i);
+    if (goalMatch) objective = goalMatch[1].trim();
+  }
+
+  // Try XML tasks first, fall back to markdown ### Task N sections
+  let tasks = parseTasks(content);
+  if (tasks.length === 0) {
+    tasks = parseMarkdownTasks(content);
+  }
+
   return {
     frontmatter,
-    objective: extractSection(content, 'objective'),
+    objective,
     execution_context: extractExecutionContext(content),
     context_refs: extractContextRefs(content),
-    tasks: parseTasks(content),
+    tasks,
     raw: content,
   };
 }
