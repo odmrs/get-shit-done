@@ -19,12 +19,41 @@ export interface WSTransportOptions {
   totalPhases?: number;
 }
 
+export interface StateSnapshot {
+  type: 'state_snapshot';
+  timestamp: string;
+  sessionId: string;
+  currentPhase: string | null;
+  currentPhaseName: string | null;
+  currentStep: string | null;
+  completedSteps: Array<{ step: string; durationMs: number; costUsd: number }>;
+  completedPhases: Array<{ phaseNumber: string; phaseName: string; success: boolean }>;
+  sessionCostUsd: number;
+  cumulativeCostUsd: number;
+  model: string | null;
+  status: 'running' | 'complete' | 'error';
+}
+
 export class WSTransport implements TransportHandler {
   private readonly port: number;
   private readonly options: WSTransportOptions;
   private server: WebSocketServer | null = null;
   private closing = false;
   private pidFile: string | null = null;
+  private stateSnapshot: StateSnapshot = {
+    type: 'state_snapshot',
+    timestamp: new Date().toISOString(),
+    sessionId: '',
+    currentPhase: null,
+    currentPhaseName: null,
+    currentStep: null,
+    completedSteps: [],
+    completedPhases: [],
+    sessionCostUsd: 0,
+    cumulativeCostUsd: 0,
+    model: null,
+    status: 'running',
+  };
 
   constructor(options: WSTransportOptions) {
     this.port = options.port;
@@ -45,6 +74,20 @@ export class WSTransport implements TransportHandler {
         this.server.on('error', (err) => reject(err));
       } catch (err) {
         reject(err);
+      }
+    });
+
+    // Send state snapshot to newly connected clients
+    this.server!.on('connection', (client: WebSocket) => {
+      try {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({
+            ...this.stateSnapshot,
+            timestamp: new Date().toISOString(),
+          }));
+        }
+      } catch {
+        // Ignore send errors on new connections
       }
     });
 
@@ -71,6 +114,9 @@ export class WSTransport implements TransportHandler {
     try {
       if (!this.server) return;
 
+      // Update state snapshot based on event type
+      this.updateSnapshot(event);
+
       const payload = JSON.stringify(event);
 
       for (const client of this.server.clients) {
@@ -84,6 +130,77 @@ export class WSTransport implements TransportHandler {
       }
     } catch {
       // TransportHandler contract: onEvent must never throw
+    }
+  }
+
+  /**
+   * Update the accumulated state snapshot from an incoming event.
+   */
+  private updateSnapshot(event: GSDEvent): void {
+    const snap = this.stateSnapshot;
+    snap.sessionId = event.sessionId;
+    snap.timestamp = event.timestamp;
+
+    switch (event.type) {
+      case 'session_init': {
+        const ev = event as unknown as Record<string, unknown>;
+        snap.model = (ev.model as string) ?? null;
+        snap.status = 'running';
+        break;
+      }
+      case 'phase_start': {
+        const ev = event as unknown as Record<string, unknown>;
+        snap.currentPhase = (ev.phaseNumber as string) ?? null;
+        snap.currentPhaseName = (ev.phaseName as string) ?? null;
+        snap.currentStep = null;
+        snap.completedSteps = [];
+        break;
+      }
+      case 'phase_step_start': {
+        const ev = event as unknown as Record<string, unknown>;
+        snap.currentStep = (ev.step as string) ?? null;
+        break;
+      }
+      case 'phase_step_complete': {
+        const ev = event as unknown as Record<string, unknown>;
+        snap.completedSteps.push({
+          step: (ev.step as string) ?? '',
+          durationMs: (ev.durationMs as number) ?? 0,
+          costUsd: snap.sessionCostUsd,
+        });
+        break;
+      }
+      case 'phase_complete': {
+        const ev = event as unknown as Record<string, unknown>;
+        snap.completedPhases.push({
+          phaseNumber: (ev.phaseNumber as string) ?? snap.currentPhase ?? '',
+          phaseName: (ev.phaseName as string) ?? snap.currentPhaseName ?? '',
+          success: (ev.success as boolean) ?? true,
+        });
+        break;
+      }
+      case 'cost_update': {
+        const ev = event as unknown as Record<string, unknown>;
+        snap.sessionCostUsd = (ev.sessionCostUsd as number) ?? snap.sessionCostUsd;
+        snap.cumulativeCostUsd = (ev.cumulativeCostUsd as number) ?? snap.cumulativeCostUsd;
+        break;
+      }
+      case 'session_complete': {
+        snap.status = 'complete';
+        const ev = event as unknown as Record<string, unknown>;
+        snap.sessionCostUsd = (ev.totalCostUsd as number) ?? snap.sessionCostUsd;
+        break;
+      }
+      case 'session_error': {
+        snap.status = 'error';
+        const ev = event as unknown as Record<string, unknown>;
+        snap.sessionCostUsd = (ev.totalCostUsd as number) ?? snap.sessionCostUsd;
+        break;
+      }
+      case 'milestone_start': {
+        // phaseCount available but not in snapshot — intentionally ignored
+        break;
+      }
     }
   }
 
