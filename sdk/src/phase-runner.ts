@@ -788,7 +788,7 @@ export class PhaseRunner {
       const prompt = await this.promptFactory.buildPrompt(phaseType, parsedPlan, contextFiles);
 
       // Snapshot git state before execution to detect if plan produced changes
-      const gitStateBefore = this.getGitFileCount();
+      const snapshotBefore = this.getGitSnapshot();
 
       const result = await runPhaseStepSession(
         prompt,
@@ -799,19 +799,14 @@ export class PhaseRunner {
         { phase: phaseType, planName: planId },
       );
 
-      // Post-execution validation: if plan claims success but produced no filesystem changes, mark as failed
+      // Post-execution validation: log warning if no changes detected, but don't override success.
+      // The verify step is the authoritative judge of whether artifacts were produced.
+      // NOTE: Disabled hard failure — agents often commit during execution, making before/after
+      // snapshots identical. The verify step catches missing artifacts reliably.
       if (result.success) {
-        const gitStateAfter = this.getGitFileCount();
-        if (gitStateBefore >= 0 && gitStateAfter >= 0 && gitStateAfter === gitStateBefore) {
-          this.logger?.warn(`Plan ${planId} reported success but produced no filesystem changes — marking as failed`);
-          return {
-            ...result,
-            success: false,
-            error: {
-              subtype: 'no_artifacts_produced',
-              messages: [`Plan ${planId} completed but produced no new or modified files`],
-            },
-          };
+        const snapshotAfter = this.getGitSnapshot();
+        if (snapshotBefore && snapshotAfter && snapshotAfter === snapshotBefore) {
+          this.logger?.warn(`Plan ${planId} may not have produced filesystem changes — verify step will confirm`);
         }
       }
 
@@ -1222,19 +1217,24 @@ export class PhaseRunner {
   }
 
   /**
-   * Get the count of tracked + untracked files as a quick filesystem snapshot.
-   * Used to detect whether a plan execution produced any file changes.
+   * Get the latest git commit hash as a snapshot marker.
+   * Used to detect whether a plan execution produced any new commits or file changes.
    */
-  private getGitFileCount(): number {
+  private getGitSnapshot(): string {
     try {
-      const output = execSync('git status --porcelain 2>/dev/null | wc -l', {
+      const hash = execSync('git rev-parse HEAD 2>/dev/null', {
         cwd: this.projectDir,
         encoding: 'utf-8',
         timeout: 5000,
-      });
-      return parseInt(output.trim(), 10) || 0;
+      }).trim();
+      const dirty = execSync('git status --porcelain 2>/dev/null | wc -l', {
+        cwd: this.projectDir,
+        encoding: 'utf-8',
+        timeout: 5000,
+      }).trim();
+      return `${hash}:${dirty}`;
     } catch {
-      return -1; // Can't determine, skip validation
+      return ''; // Can't determine, skip validation
     }
   }
 
